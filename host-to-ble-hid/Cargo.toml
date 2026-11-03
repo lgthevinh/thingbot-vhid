@@ -1,0 +1,9 @@
+[package]
+name = "host-to-ble-hid"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+btleplug = "0.13.5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures = "0.3"
