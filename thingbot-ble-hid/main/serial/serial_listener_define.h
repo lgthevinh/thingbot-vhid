@@ -1,7 +1,5 @@
 #pragma once
 
-#include "esp_err.h"
-
 // Frame layout on UART: SOF | type | len | payload[len] | checksum
 // checksum = XOR of type, len and payload bytes.
 // Payload is a raw HID report (ble_hid_keyboard_report_t / ble_hid_mouse_report_t).
@@ -15,6 +13,3 @@ typedef enum {
     SERIAL_HID_TYPE_KEYBOARD = 0x01,
     SERIAL_HID_TYPE_MOUSE = 0x02,
 } serial_hid_type_t;
-
-// Starts the UART0 listener task that forwards valid frames to BLE HID.
-esp_err_t serial_listener_init(void);

@@ -2,7 +2,7 @@
 #include "nvs_flash.h"
 
 #include "ble_hid.h"
-#include "serial_hid.h"
+#include "serial_listener.h"
 
 void app_main(void)
 {
