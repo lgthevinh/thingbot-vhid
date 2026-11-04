@@ -17,6 +17,7 @@ void ble_store_config_init(void);
 
 static const char *TAG = "ble_hid";
 
+// clang-format off
 static const uint8_t ble_hid_report_map[] = {
     // Keyboard: input 8 bytes, output 1 byte (LEDs)
     0x05, 0x01, // Usage Page (Generic Desktop)
@@ -95,9 +96,10 @@ static const uint8_t ble_hid_report_map[] = {
     0xC0,       //   End Collection
     0xC0,       // End Collection
 };
+// clang-format on
 
 static esp_hid_raw_report_map_t report_maps[] = {
-    { .data = ble_hid_report_map, .len = sizeof(ble_hid_report_map) },
+    {.data = ble_hid_report_map, .len = sizeof(ble_hid_report_map)},
 };
 
 static esp_hidd_dev_t *ble_hid_dev;
@@ -163,8 +165,7 @@ static void ble_hid_event_cb(void *handler_args, esp_event_base_t base, int32_t 
 {
     esp_hidd_event_data_t *param = (esp_hidd_event_data_t *)event_data;
 
-    switch ((esp_hidd_event_t)id) 
-    {
+    switch ((esp_hidd_event_t)id) {
     case ESP_HIDD_START_EVENT:
         ESP_LOGI(TAG, "start");
         ble_hid_adv_start();
@@ -186,8 +187,7 @@ static void ble_hid_event_cb(void *handler_args, esp_event_base_t base, int32_t 
         ESP_LOGI(TAG, "feature id %u, len %u", param->feature.report_id, (unsigned)param->feature.length);
         break;
     case ESP_HIDD_DISCONNECT_EVENT:
-        ESP_LOGI(TAG, "disconnect: %s",
-                 esp_hid_disconnect_reason_str(ESP_HID_TRANSPORT_BLE, param->disconnect.reason));
+        ESP_LOGI(TAG, "disconnect: %s", esp_hid_disconnect_reason_str(ESP_HID_TRANSPORT_BLE, param->disconnect.reason));
         ble_hid_adv_start();
         break;
     case ESP_HIDD_STOP_EVENT:
@@ -207,13 +207,8 @@ esp_err_t ble_hid_init(const char *device_name)
 {
     static esp_hid_device_config_t config = {
         // 0x16C0/0x05DF is the shared V-USB test VID/PID; replace for a real product
-        .vendor_id = 0x16C0,
-        .product_id = 0x05DF,
-        .version = 0x0100,
-        .manufacturer_name = "ThingEdu",
-        .serial_number = "0001",
-        .report_maps = report_maps,
-        .report_maps_len = 1,
+        .vendor_id = 0x16C0,     .product_id = 0x05DF,       .version = 0x0100,    .manufacturer_name = "ThingEdu",
+        .serial_number = "0001", .report_maps = report_maps, .report_maps_len = 1,
     };
     config.device_name = device_name;
     ble_hid_name = device_name;
@@ -231,8 +226,8 @@ esp_err_t ble_hid_init(const char *device_name)
     ble_store_config_init();
 
     // registers the HID GATT services; NimBLE fixes its GATT table at sync, so this must precede the host task
-    ESP_RETURN_ON_ERROR(esp_hidd_dev_init(&config, ESP_HID_TRANSPORT_BLE, ble_hid_event_cb, &ble_hid_dev),
-                        TAG, "hidd init");
+    ESP_RETURN_ON_ERROR(esp_hidd_dev_init(&config, ESP_HID_TRANSPORT_BLE, ble_hid_event_cb, &ble_hid_dev), TAG,
+                        "hidd init");
 
     // name and appearance shown by the host after connecting (GAP service, set up by esp_hidd_dev_init)
     ble_svc_gap_device_name_set(device_name);
@@ -250,21 +245,10 @@ bool ble_hid_is_connected(void)
 esp_err_t ble_hid_send_keyboard(const ble_hid_keyboard_report_t *report)
 {
     // esp_hidd_dev_input_set() takes a non-const pointer but only copies the data
-    return esp_hidd_dev_input_set(
-        ble_hid_dev, 0, 
-        BLE_HID_REPORT_ID_KEYBOARD,
-        (uint8_t *)report, 
-        sizeof(*report)
-    );
+    return esp_hidd_dev_input_set(ble_hid_dev, 0, BLE_HID_REPORT_ID_KEYBOARD, (uint8_t *)report, sizeof(*report));
 }
 
 esp_err_t ble_hid_send_mouse(const ble_hid_mouse_report_t *report)
 {
-    return esp_hidd_dev_input_set(
-        ble_hid_dev, 
-        0, 
-        BLE_HID_REPORT_ID_MOUSE,
-        (uint8_t *)report, 
-        sizeof(*report)
-    );
+    return esp_hidd_dev_input_set(ble_hid_dev, 0, BLE_HID_REPORT_ID_MOUSE, (uint8_t *)report, sizeof(*report));
 }

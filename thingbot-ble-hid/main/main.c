@@ -2,6 +2,7 @@
 #include "nvs_flash.h"
 
 #include "ble_hid.h"
+#include "serial_hid.h"
 
 void app_main(void)
 {
@@ -14,4 +15,5 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_ERROR_CHECK(ble_hid_init("ThingBot"));
+    ESP_ERROR_CHECK(serial_listener_init());
 }

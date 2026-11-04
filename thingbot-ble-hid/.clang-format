@@ -1,0 +1,11 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+# braces attached for if/for/switch/struct/enum, but on a new line for function definitions
+BreakBeforeBraces: Linux
+IndentCaseLabels: false
+PointerAlignment: Right
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+SortIncludes: Never
+AlignConsecutiveMacros: Consecutive
