@@ -3,7 +3,7 @@
 
 #include <string.h>
 
-#include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -11,9 +11,7 @@
 
 #include "ble_hid.h"
 
-// UART0 is the devkit's USB-serial bridge; logs keep printing on TX while frames arrive on RX
-#define SERIAL_LISTENER_UART    UART_NUM_0
-#define SERIAL_LISTENER_BAUD    115200
+// The board's USB port is the chip's USB-Serial-JTAG, not a bridge to UART0; logs share the same port
 #define SERIAL_LISTENER_RX_BUF  1024
 #define SERIAL_LISTENER_MAX_LEN SERIAL_HID_KEYBOARD_LEN
 
@@ -49,7 +47,7 @@ static void serial_listener_dispatch(uint8_t type, const uint8_t *payload)
 }
 
 /**
- * Reads UART bytes and runs them through the frame parser.
+ * Reads USB-Serial-JTAG bytes and runs them through the frame parser.
  * Any invalid type, length or checksum resets to SOF search, which is how the stream resyncs.
  */
 static void serial_listener_task(void *param)
@@ -60,7 +58,7 @@ static void serial_listener_task(void *param)
     uint8_t buf[64];
 
     for (;;) {
-        int n = uart_read_bytes(SERIAL_LISTENER_UART, buf, sizeof(buf), pdMS_TO_TICKS(10));
+        int n = usb_serial_jtag_read_bytes(buf, sizeof(buf), pdMS_TO_TICKS(10));
 
         for (int i = 0; i < n; i++) {
             uint8_t b = buf[i];
@@ -126,18 +124,10 @@ static void serial_listener_task(void *param)
 
 esp_err_t serial_listener_init(void)
 {
-    const uart_config_t cfg = {
-        .baud_rate = SERIAL_LISTENER_BAUD,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
+    usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    cfg.rx_buffer_size = SERIAL_LISTENER_RX_BUF;
 
-    ESP_RETURN_ON_ERROR(uart_param_config(SERIAL_LISTENER_UART, &cfg), TAG, "uart config failed");
-    ESP_RETURN_ON_ERROR(uart_driver_install(SERIAL_LISTENER_UART, SERIAL_LISTENER_RX_BUF, 0, 0, NULL, 0), TAG,
-                        "uart driver install failed");
+    ESP_RETURN_ON_ERROR(usb_serial_jtag_driver_install(&cfg), TAG, "usb serial jtag driver install failed");
 
     if (xTaskCreate(serial_listener_task, "serial_listener", 3 * 1024, NULL, 5, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;

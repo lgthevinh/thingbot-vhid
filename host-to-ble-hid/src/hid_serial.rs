@@ -1,72 +1,56 @@
-use tokio_serial::SerialPort;
+use tokio::io::AsyncWriteExt;
+use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
-use crate::hid_serial::hid_serial_type::HID_SERIAL_BAUD_RATE;
+use crate::hid_serial::hid_serial_keyboard::HidSerialKeyboardReport;
+use crate::hid_serial::hid_serial_mouse::HidSerialMouseReport;
+use crate::hid_serial::hid_serial_type::{HID_SERIAL_BAUD_RATE, HID_SERIAL_SOF, HidSerialType};
 
 pub mod hid_serial_keyboard;
 pub mod hid_serial_mouse;
 pub mod hid_serial_type;
 
-const TAG: &str = "hid_serial";
 pub struct HidSerialDeviceInfo {
-    port_name: String,
+    pub port_name: String,
 }
 
-pub struct HidSerialPacket {
-    _type: u8,
-    len: u8,
-    payload: Vec<u8>,
-    checksum: u8,
-}
 pub struct HidSerialHandler {
-    serial_port: Box<dyn SerialPort>,
+    serial_port: SerialStream,
 }
 
 impl HidSerialHandler {
-    pub async fn scan() -> Result<Vec<HidSerialDeviceInfo>, tokio_serial::Error> {
-        let mut device_infos = Vec::new();
-        match tokio_serial::available_ports() {
-            Ok(infos) => {
-                for info in infos {
-                    device_infos.push(HidSerialDeviceInfo {
-                        port_name: info.port_name,
-                    });
-                }
-                Ok(device_infos)
-            }
-            Err(e) => {
-                tracing::debug!(TAG, "scan failed: {}", e);
-                Err(e)
-            }
-        }
+    pub fn scan() -> Result<Vec<HidSerialDeviceInfo>, tokio_serial::Error> {
+        let infos = tokio_serial::available_ports()?;
+        Ok(infos
+            .into_iter()
+            .map(|info| HidSerialDeviceInfo {
+                port_name: info.port_name,
+            })
+            .collect())
     }
 
-    pub async fn connect(
-        &mut self,
-        device_info: HidSerialDeviceInfo,
-    ) -> Result<(), tokio_serial::Error> {
-        let serial_port = tokio_serial::new(device_info.port_name, HID_SERIAL_BAUD_RATE);
-        self.serial_port = serial_port.open().unwrap();
-        Ok(())
+    pub fn connect(device_info: &HidSerialDeviceInfo) -> Result<Self, tokio_serial::Error> {
+        let serial_port =
+            tokio_serial::new(&device_info.port_name, HID_SERIAL_BAUD_RATE).open_native_async()?;
+        Ok(Self { serial_port })
     }
 
-    async fn send(&mut self, packet: HidSerialPacket) -> Result<(), Box<dyn std::error::Error>> {
-        let mut bytes: Vec<u8> = Vec::new();
+    /// Writes one `SOF | type | len | payload | checksum` frame.
+    async fn send(&mut self, hid_type: HidSerialType, payload: &[u8]) -> std::io::Result<()> {
+        let len = payload.len() as u8;
+        let checksum = payload.iter().fold(hid_type as u8 ^ len, |sum, b| sum ^ b);
 
-        bytes.push(packet._type);
-        bytes.push(packet.len);
-        for byte in packet.payload.into_iter() {
-            bytes.push(byte);
-        }
+        let mut frame = vec![HID_SERIAL_SOF, hid_type as u8, len];
+        frame.extend_from_slice(payload);
+        frame.push(checksum);
 
-        bytes.push(packet.checksum);
-
-        match self.serial_port.write(&bytes) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(Box::new(e)),
-        }
+        self.serial_port.write_all(&frame).await
     }
 
-    pub async fn send_keyboard() {}
+    pub async fn send_keyboard(&mut self, report: &HidSerialKeyboardReport) -> std::io::Result<()> {
+        self.send(HidSerialType::KEYBOARD, &report.to_bytes()).await
+    }
 
-    pub async fn send_mouse() {}
+    pub async fn send_mouse(&mut self, report: &HidSerialMouseReport) -> std::io::Result<()> {
+        self.send(HidSerialType::MOUSE, &report.to_bytes()).await
+    }
 }
