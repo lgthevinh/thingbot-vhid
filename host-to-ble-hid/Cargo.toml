@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync"] }
 futures = "0.3"
 tracing = "0.1.44"
 tokio-serial = "5.5.0"
 evdev = { version = "0.13.2", features = ["tokio"] }
+slint = "1.18.1"
+
+[build-dependencies]
+slint-build = "1.18.1"

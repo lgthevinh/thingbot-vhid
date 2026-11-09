@@ -1,0 +1,83 @@
+import { Button, ComboBox, GroupBox, ListView, Switch, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component MainWindow inherits Window {
+    title: "Thingbot VHID";
+    width: 380px;
+    height: 440px;
+
+    in property <[string]> ports;
+    in property <bool> connected;
+    in-out property <bool> forwarding;
+    in property <[string]> devices;
+    in property <string> error;
+
+    callback refresh-ports();
+    callback connect(int);
+    callback disconnect();
+    callback toggle-forwarding();
+
+    VerticalBox {
+        GroupBox {
+            title: "Serial port";
+            VerticalBox {
+                HorizontalBox {
+                    padding: 0;
+                    port := ComboBox {
+                        horizontal-stretch: 1;
+                        model: root.ports;
+                        enabled: !root.connected;
+                    }
+                    Button {
+                        text: "↻";
+                        enabled: !root.connected;
+                        clicked => { root.refresh-ports(); }
+                    }
+                    Button {
+                        text: root.connected ? "Disconnect" : "Connect";
+                        enabled: root.connected || root.ports.length > 0;
+                        clicked => {
+                            if root.connected {
+                                root.disconnect();
+                            } else {
+                                root.connect(port.current-index);
+                            }
+                        }
+                    }
+                }
+                Text {
+                    text: root.connected ? "● Connected" : "○ Disconnected";
+                }
+            }
+        }
+
+        GroupBox {
+            title: "Forwarding";
+            VerticalBox {
+                Switch {
+                    text: "Forward input";
+                    enabled: root.connected;
+                    checked <=> root.forwarding;
+                    toggled => { root.toggle-forwarding(); }
+                }
+                Text {
+                    text: "Toggle: Alt+Shift+F12";
+                }
+            }
+        }
+
+        GroupBox {
+            title: "Devices";
+            vertical-stretch: 1;
+            ListView {
+                for device in root.devices: Text {
+                    text: device;
+                }
+            }
+        }
+
+        Text {
+            text: "Last error: " + (root.error == "" ? "—" : root.error);
+            wrap: word-wrap;
+        }
+    }
+}

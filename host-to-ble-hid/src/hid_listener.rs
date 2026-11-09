@@ -6,30 +6,51 @@ use std::task::Poll;
 use evdev::{
     EventStream, EventSummary, InputEvent, KeyCode, RelativeAxisCode, SynchronizationCode,
 };
+use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::hid_serial::HidSerialHandler;
 use crate::hid_serial::hid_serial_keyboard::HidSerialKeyboardReport;
 use crate::hid_serial::hid_serial_mouse::{self, HidSerialMouseReport};
+use crate::hid_serial::{HidSerialDeviceInfo, HidSerialHandler};
 
-/// Reads every keyboard and mouse through evdev, grabs them and forwards their input as serial HID reports.
+pub enum ListenerCommand {
+    Connect(String),
+    Disconnect,
+    ToggleForwarding,
+}
+
+#[derive(Clone, PartialEq, Default)]
+pub struct ListenerStatus {
+    pub connected: bool,
+    pub forwarding: bool,
+    pub devices: Vec<String>,
+    pub error: String,
+}
+
+/// Reads every keyboard and mouse through evdev and, while forwarding, grabs them and sends their input as serial HID reports.
 /// Alt+Shift+F12 toggles forwarding.
 pub struct HidListener {
     streams: Vec<EventStream>,
-    serial: HidSerialHandler,
+    names: Vec<String>,
+    serial: Option<HidSerialHandler>,
     pressed: BTreeSet<KeyCode>,
     forwarding: bool,
     pending_grab: bool,
     motion: (i32, i32, i32),
     last_keyboard: HidSerialKeyboardReport,
     last_buttons: u8,
+    error: String,
+    on_status: Box<dyn Fn(ListenerStatus) + Send>,
+    last_status: Option<ListenerStatus>,
 }
 
 impl HidListener {
-    pub fn open(serial: HidSerialHandler) -> io::Result<Self> {
+    /// Opens all keyboards and mice; must be called inside a tokio runtime.
+    pub fn open(on_status: Box<dyn Fn(ListenerStatus) + Send>) -> Self {
         let mut streams = Vec::new();
+        let mut names = Vec::new();
         let mut pressed = BTreeSet::new();
 
-        for (path, device) in evdev::enumerate() {
+        for (_, device) in evdev::enumerate() {
             let keys = device.supported_keys();
             let is_keyboard = keys.is_some_and(|k| k.contains(KeyCode::KEY_A));
             let is_mouse = keys.is_some_and(|k| k.contains(KeyCode::BTN_LEFT))
@@ -40,56 +61,104 @@ impl HidListener {
                 continue;
             }
 
-            // Keys held at startup (e.g. Enter that launched us) must be released before grabbing
-            pressed.extend(device.get_key_state()?.iter());
-            tracing::info!(
-                "using {} ({})",
-                path.display(),
-                device.name().unwrap_or("?")
-            );
-            streams.push(device.into_event_stream()?);
+            // Keys already held must be released before the first grab
+            let Ok(state) = device.get_key_state() else {
+                continue;
+            };
+            let name = device.name().unwrap_or("?").to_string();
+            let Ok(stream) = device.into_event_stream() else {
+                continue;
+            };
+            pressed.extend(state.iter());
+            names.push(name);
+            streams.push(stream);
         }
 
-        if streams.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "no keyboard or mouse found",
-            ));
-        }
+        let error = if streams.is_empty() {
+            "no readable keyboard or mouse; is the user in the input group?".to_string()
+        } else {
+            String::new()
+        };
 
-        Ok(Self {
+        Self {
             streams,
-            serial,
+            names,
+            serial: None,
             pressed,
             forwarding: false,
-            pending_grab: true,
+            pending_grab: false,
             motion: (0, 0, 0),
             last_keyboard: HidSerialKeyboardReport::default(),
             last_buttons: 0,
-        })
-    }
-
-    pub async fn run(&mut self) -> io::Result<()> {
-        self.try_grab()?;
-        loop {
-            let event = match self.next_event().await {
-                Ok(event) => event,
-                Err(e) => {
-                    // Device gone: don't leave keys held on the target
-                    let _ = self.release().await;
-                    return Err(e);
-                }
-            };
-            self.handle(event).await?;
+            error,
+            on_status,
+            last_status: None,
         }
     }
 
-    /// Waits for the next event from any device.
-    async fn next_event(&mut self) -> io::Result<InputEvent> {
+    /// Runs until the command sender is dropped.
+    pub async fn run(mut self, mut commands: UnboundedReceiver<ListenerCommand>) {
+        loop {
+            self.publish();
+            tokio::select! {
+                command = commands.recv() => {
+                    let Some(command) = command else {
+                        self.stop_forwarding().await;
+                        return;
+                    };
+                    if let Err(e) = self.handle_command(command).await {
+                        self.fail(e).await;
+                    }
+                }
+                (index, result) = self.next_event() => match result {
+                    Ok(event) => {
+                        if let Err(e) = self.handle(event).await {
+                            self.fail(e).await;
+                        }
+                    }
+                    Err(e) => self.remove_device(index, e).await,
+                },
+            }
+        }
+    }
+
+    /// Sends the current status if it changed since the last call.
+    fn publish(&mut self) {
+        let status = ListenerStatus {
+            connected: self.serial.is_some(),
+            forwarding: self.forwarding,
+            devices: self.names.clone(),
+            error: self.error.clone(),
+        };
+        if self.last_status.as_ref() != Some(&status) {
+            (self.on_status)(status.clone());
+            self.last_status = Some(status);
+        }
+    }
+
+    async fn handle_command(&mut self, command: ListenerCommand) -> io::Result<()> {
+        match command {
+            ListenerCommand::Connect(port_name) => {
+                self.serial = Some(HidSerialHandler::connect(&HidSerialDeviceInfo {
+                    port_name,
+                })?);
+                self.error.clear();
+            }
+            ListenerCommand::Disconnect => {
+                self.stop_forwarding().await;
+                self.serial = None;
+            }
+            ListenerCommand::ToggleForwarding => self.toggle().await?,
+        }
+        Ok(())
+    }
+
+    /// Waits for the next event from any device, returning the device's index with it.
+    async fn next_event(&mut self) -> (usize, io::Result<InputEvent>) {
         poll_fn(|cx| {
-            for stream in &mut self.streams {
+            for (index, stream) in self.streams.iter_mut().enumerate() {
                 if let Poll::Ready(result) = stream.poll_event(cx) {
-                    return Poll::Ready(result);
+                    return Poll::Ready((index, result));
                 }
             }
             Poll::Pending
@@ -143,15 +212,11 @@ impl HidListener {
     }
 
     async fn toggle(&mut self) -> io::Result<()> {
-        if self.forwarding {
-            self.forwarding = false;
-            self.release().await?;
-            for stream in &mut self.streams {
-                stream.device_mut().ungrab()?;
-            }
-            tracing::info!("forwarding off");
-        } else {
+        if self.forwarding || self.pending_grab {
+            self.stop_forwarding().await;
+        } else if self.serial.is_some() {
             self.pending_grab = true;
+            self.try_grab()?;
         }
         Ok(())
     }
@@ -168,15 +233,53 @@ impl HidListener {
         self.pending_grab = false;
         self.forwarding = true;
         self.motion = (0, 0, 0);
-        tracing::info!("forwarding on");
         Ok(())
+    }
+
+    /// Releases everything on the target and ungrabs; best effort since it also runs after failures.
+    async fn stop_forwarding(&mut self) {
+        self.pending_grab = false;
+        if self.forwarding {
+            self.forwarding = false;
+            let _ = self.release().await;
+        }
+        for stream in &mut self.streams {
+            let _ = stream.device_mut().ungrab();
+        }
+    }
+
+    /// Stops forwarding and drops the serial port after an error.
+    async fn fail(&mut self, error: io::Error) {
+        self.error = error.to_string();
+        self.stop_forwarding().await;
+        self.serial = None;
+    }
+
+    /// Drops a device whose stream failed (usually unplugged).
+    async fn remove_device(&mut self, index: usize, error: io::Error) {
+        self.stop_forwarding().await;
+        self.streams.remove(index);
+        let name = self.names.remove(index);
+        self.error = format!("{name}: {error}");
+
+        // Its held keys can never be released now, so rebuild the set from the remaining devices
+        self.pressed = self
+            .streams
+            .iter()
+            .filter_map(|stream| stream.device().get_key_state().ok())
+            .flat_map(|keys| keys.iter().collect::<Vec<_>>())
+            .collect();
     }
 
     /// Sends the reports that changed since the last sync.
     async fn flush(&mut self) -> io::Result<()> {
+        let Some(serial) = &mut self.serial else {
+            return Ok(());
+        };
+
         let keyboard = HidSerialKeyboardReport::from_pressed(&self.pressed);
         if keyboard != self.last_keyboard {
-            self.serial.send_keyboard(&keyboard).await?;
+            serial.send_keyboard(&keyboard).await?;
             self.last_keyboard = keyboard;
         }
 
@@ -188,7 +291,7 @@ impl HidListener {
         let (x, y, wheel) = std::mem::take(&mut self.motion);
         if buttons != self.last_buttons || (x, y, wheel) != (0, 0, 0) {
             for report in hid_serial_mouse::split_motion(buttons, x, y, wheel) {
-                self.serial.send_mouse(&report).await?;
+                serial.send_mouse(&report).await?;
             }
             self.last_buttons = buttons;
         }
@@ -199,9 +302,10 @@ impl HidListener {
     async fn release(&mut self) -> io::Result<()> {
         self.last_keyboard = HidSerialKeyboardReport::default();
         self.last_buttons = 0;
-        self.serial.send_keyboard(&self.last_keyboard).await?;
-        self.serial
-            .send_mouse(&HidSerialMouseReport::default())
-            .await
+        let Some(serial) = &mut self.serial else {
+            return Ok(());
+        };
+        serial.send_keyboard(&self.last_keyboard).await?;
+        serial.send_mouse(&HidSerialMouseReport::default()).await
     }
 }
