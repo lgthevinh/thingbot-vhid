@@ -25,3 +25,9 @@ pub enum HidSerialKeyboardModifier {
     RALT = 0x40,
     RGUI = 0x80,
 }
+
+pub struct HidSerialKeyboardReport {
+    modifiers: u8,
+    reserved: u8,
+    keys: [u8; 6],
+}

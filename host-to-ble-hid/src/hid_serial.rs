@@ -49,7 +49,22 @@ impl HidSerialHandler {
         Ok(())
     }
 
-    fn send() {}
+    async fn send(&mut self, packet: HidSerialPacket) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes: Vec<u8> = Vec::new();
+
+        bytes.push(packet._type);
+        bytes.push(packet.len);
+        for byte in packet.payload.into_iter() {
+            bytes.push(byte);
+        }
+
+        bytes.push(packet.checksum);
+
+        match self.serial_port.write(&bytes) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
 
     pub async fn send_keyboard() {}
 
